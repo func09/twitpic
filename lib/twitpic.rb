@@ -1,22 +1,24 @@
 require "net/https"
 require "uri"
 require 'mime/types'
-require "rexml/document"
+require 'json'
 
 class TwitPic
-  VERSION = '0.3.1'
+  VERSION = '0.4.0'
 
   class APIError < StandardError; end
 
-  def initialize(username, password)
-    @username = username
-    @password = password
+  def initialize(api_key, consumer_key, consumer_secret)
+    @api_key, @consumer_key, @consumer_secret = api_key, consumer_key, consumer_secret
   end
 
-  def upload(file_path, message = nil, boundary = "----------------------------TwitPic#{rand(1000000000000)}")
+  def upload(file_path, oauth_token, oauth_secret, message = nil, boundary = "----------------------------TwitPic#{rand(1000000000000)}")
     parts = {
-      :username => @username,
-      :password => @password
+      :key => @api_key,
+      :consumer_token => @consumer_key,
+      :consumer_secret => @consumer_secret,
+      :oauth_token => oauth_token,
+      :oauth_secret => oauth_secret,
     }
     parts[:message] = message if message && !message.empty?
 
@@ -24,9 +26,9 @@ class TwitPic
 
     url = 
       if parts[:message]
-        'http://twitpic.com/api/uploadAndPost'
+        'http://api.twitpic.com/1/uploadAndPost.json'
       else
-        'http://twitpic.com/api/upload'
+        'http://api.twitpic.com/1/upload.json'
       end
 
     post(url, body, boundary)
@@ -35,29 +37,30 @@ class TwitPic
   def post(url, body, boundary)
     uri = URI.parse(url)
     http = Net::HTTP.new(uri.host, uri.port)
-    xml = http.start do |http|
+    json = http.start do |http|
       headers = {"Content-Type" => "multipart/form-data; boundary=" + boundary}
       response = http.post(uri.path, body, headers)
+      
+      case response.code
+      when "200"
+      when "400"
+        raise APIError, "Bad Request"
+      when "401"
+        raise APIError, "Unauthorized"
+      else
+        raise APIError, "Other Error"
+      end
+      
       response.body
     end
-    parse_response(xml)
+    parse_response(json)
   end
 
-  def parse_response(xml)
-    doc = REXML::Document.new(xml)
-    error_element = REXML::XPath.match(doc, "/rsp/err").first
-    if error_element
-      raise APIError, error_element.attribute('code').value + ': ' + error_element.attribute('code').value
-    else
-      result = {}
-      [:statusid, :userid, :mediaid, :mediaurl].each do |key|
-        result[key] = REXML::XPath.match(doc, "/rsp/#{key}").first.text rescue nil
-      end
-      result
-    end
+  def parse_response(json)
+    JSON.parse(json)
   end
 
-  def content_type
+  def content_type(file_path)
     type = MIME::Types.type_for(file_path).first
     if type
       type.content_type
@@ -69,13 +72,13 @@ class TwitPic
   def create_body(parts, file_path, boundary)
     parts[:media] = open(file_path, 'rb').read
     body = ''
-    [:media, :username, :password, :message].each do |key|
+    [:media, :key, :consumer_token, :consumer_secret, :oauth_token, :oauth_secret, :message].each do |key|
       value = parts[key]
       next unless value
       body << "--#{boundary}\r\n"
       if key == :media
         body << "Content-Disposition: form-data; name=\"#{key}\"; filename=\"#{File.basename(file_path)}\"\r\n"
-        body << "Content-Type: #{content_type}\r\n"
+        body << "Content-Type: #{content_type(file_path)}\r\n"
       else
         body << "Content-Disposition: form-data; name=\"#{key}\"\r\n"
       end
